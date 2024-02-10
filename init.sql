@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS "transacoes" (
                                             "valor" integer NOT NULL,
                                             "tipo" char(1) NOT NULL,
                                             "descricao" varchar(10) NOT NULL,
-                                            "created_at" timestamp DEFAULT now(),
+                                            "realizado_em" timestamp DEFAULT now(),
                                             CONSTRAINT fk_cliente FOREIGN KEY(cliente_id) references clientes(id) on delete set null on update no action
 
 );

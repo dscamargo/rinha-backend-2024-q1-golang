@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v2"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"log"
@@ -70,17 +70,17 @@ func main() {
 
 	app := fiber.New(fiber.Config{})
 
-	app.Post("/clientes/:id/transacoes", func(ctx fiber.Ctx) error {
+	app.Post("/clientes/:id/transacoes", func(ctx *fiber.Ctx) error {
 		return postTransactionsController(ctx, dbConn)
 	})
-	app.Get("/clientes/:id/extrato", func(ctx fiber.Ctx) error {
+	app.Get("/clientes/:id/extrato", func(ctx *fiber.Ctx) error {
 		return getClientBalanceController(ctx, dbConn)
 	})
 
 	log.Fatalln(app.Listen(":" + config.port))
 }
 
-func postTransactionsController(c fiber.Ctx, dbConn *pgxpool.Pool) error {
+func postTransactionsController(c *fiber.Ctx, dbConn *pgxpool.Pool) error {
 	clientId, err := c.ParamsInt("id")
 	if err != nil {
 		return c.SendStatus(http.StatusUnprocessableEntity)
@@ -91,7 +91,7 @@ func postTransactionsController(c fiber.Ctx, dbConn *pgxpool.Pool) error {
 	}
 
 	var body transactionInput
-	if err := c.Bind().JSON(&body); err != nil {
+	if err := c.BodyParser(&body); err != nil {
 		return c.SendStatus(http.StatusUnprocessableEntity)
 	}
 
@@ -128,7 +128,7 @@ func postTransactionsController(c fiber.Ctx, dbConn *pgxpool.Pool) error {
 	})
 }
 
-func getClientBalanceController(c fiber.Ctx, dbConn *pgxpool.Pool) error {
+func getClientBalanceController(c *fiber.Ctx, dbConn *pgxpool.Pool) error {
 	clientId, err := c.ParamsInt("id")
 	if err != nil {
 		return c.Status(http.StatusBadRequest).Send([]byte{})

@@ -8,10 +8,12 @@ services:
     environment:
       - PORT=8080
       - DATABASE_URL=postgresql://pg:pg@db:5432/rinha
-    depends_on:
       - db
     ports:
       - "8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
     deploy:
       resources:
         limits:
@@ -33,6 +35,12 @@ services:
       - POSTGRES_DB=rinha
     volumes:
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: [ 'CMD-SHELL', 'pg_isready -U pg -d rinha' ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    command: postgres -c checkpoint_timeout=600 -c max_wal_size=4096 -c max_connections=1000 -c shared_buffers=128MB -c synchronous_commit=off -c fsync=off -c full_page_writes=off
     deploy:
       resources:
         limits:
