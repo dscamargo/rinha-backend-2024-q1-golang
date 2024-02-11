@@ -2,14 +2,17 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/gofiber/fiber/v2"
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/render"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 )
 
@@ -68,35 +71,41 @@ func main() {
 		os.Exit(1)
 	}
 
-	app := fiber.New(fiber.Config{})
+	app := chi.NewRouter()
+	//app.Use(middleware.Logger)
 
-	app.Post("/clientes/:id/transacoes", func(ctx *fiber.Ctx) error {
-		return postTransactionsController(ctx, dbConn)
+	app.Post("/clientes/{id}/transacoes", func(w http.ResponseWriter, r *http.Request) {
+		postTransactionsController(w, r, dbConn)
 	})
-	app.Get("/clientes/:id/extrato", func(ctx *fiber.Ctx) error {
-		return getClientBalanceController(ctx, dbConn)
+	app.Get("/clientes/{id}/extrato", func(w http.ResponseWriter, r *http.Request) {
+		getClientBalanceController(w, r, dbConn)
 	})
+	log.Fatalln(http.ListenAndServe(":"+config.port, app))
 
-	log.Fatalln(app.Listen(":" + config.port))
 }
 
-func postTransactionsController(c *fiber.Ctx, dbConn *pgxpool.Pool) error {
-	clientId, err := c.ParamsInt("id")
+func postTransactionsController(w http.ResponseWriter, r *http.Request, dbConn *pgxpool.Pool) {
+	clientIdStr := chi.URLParam(r, "id")
+	clientId, err := strconv.Atoi(clientIdStr)
 	if err != nil {
-		return c.SendStatus(http.StatusUnprocessableEntity)
+		http.Error(w, "", http.StatusBadRequest)
+		return
 	}
 
 	if clientId > 5 {
-		return c.SendStatus(http.StatusNotFound)
+		w.WriteHeader(http.StatusNotFound)
+		return
 	}
 
 	var body transactionInput
-	if err := c.BodyParser(&body); err != nil {
-		return c.SendStatus(http.StatusUnprocessableEntity)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		return
 	}
 
 	if (body.Tipo != "c" && body.Tipo != "d") || body.Valor == 0 || len(body.Descricao) < 1 || len(body.Descricao) > 10 {
-		return c.SendStatus(http.StatusUnprocessableEntity)
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		return
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -112,30 +121,36 @@ func postTransactionsController(c *fiber.Ctx, dbConn *pgxpool.Pool) error {
 	err = dbConn.QueryRow(ctx, "call criar_transacao($1, $2, $3, $4)", clientId, valor, body.Tipo, body.Descricao).Scan(&updatedBalance, &updatedLimit)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return c.Status(http.StatusUnprocessableEntity).Send([]byte{})
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			return
 		}
 		log.Println("erro ao atualizar saldo: ", err)
-		return c.Status(http.StatusInternalServerError).Send([]byte{})
+		http.Error(w, "", http.StatusInternalServerError)
+		return
 	}
 
 	if updatedBalance == nil {
-		return c.Status(http.StatusUnprocessableEntity).Send([]byte{})
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		return
 	}
 
-	return c.Status(http.StatusOK).JSON(map[string]int{
+	render.JSON(w, r, map[string]int{
 		"saldo":  *updatedBalance,
 		"limite": *updatedLimit,
 	})
 }
 
-func getClientBalanceController(c *fiber.Ctx, dbConn *pgxpool.Pool) error {
-	clientId, err := c.ParamsInt("id")
+func getClientBalanceController(w http.ResponseWriter, r *http.Request, dbConn *pgxpool.Pool) {
+	clientIdStr := chi.URLParam(r, "id")
+	clientId, err := strconv.Atoi(clientIdStr)
 	if err != nil {
-		return c.Status(http.StatusBadRequest).Send([]byte{})
+		http.Error(w, "", http.StatusBadRequest)
+		return
 	}
 
 	if clientId > 5 {
-		return c.SendStatus(http.StatusNotFound)
+		w.WriteHeader(http.StatusNotFound)
+		return
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -145,14 +160,16 @@ func getClientBalanceController(c *fiber.Ctx, dbConn *pgxpool.Pool) error {
 	err = dbConn.QueryRow(ctx, GetClientBalanceQuery, clientId).Scan(&balanceOutput.Total, &balanceOutput.Limite)
 	if err != nil {
 		log.Println("erro ao buscar saldo do cliente: ", err)
-		return c.Status(http.StatusInternalServerError).Send([]byte{})
+		w.WriteHeader(http.StatusInternalServerError)
+		return
 	}
 
 	lastTransactions := make([]lastTransactionsResponse, 0)
 	lastTransactionsRows, err := dbConn.Query(ctx, GetLastTransactionsQuery, clientId)
 	if err != nil {
 		log.Println("erro ao buscar ultimas transacoes: ", err)
-		return c.Status(http.StatusInternalServerError).Send([]byte{})
+		w.WriteHeader(http.StatusInternalServerError)
+		return
 	}
 
 	for lastTransactionsRows.Next() {
@@ -160,7 +177,8 @@ func getClientBalanceController(c *fiber.Ctx, dbConn *pgxpool.Pool) error {
 		err := lastTransactionsRows.Scan(&lastTransaction.Valor, &lastTransaction.Tipo, &lastTransaction.Descricao, &lastTransaction.RealizadoEm)
 		if err != nil {
 			log.Println("extrato Scan: ", err)
-			return c.Status(http.StatusInternalServerError).Send([]byte{})
+			w.WriteHeader(http.StatusInternalServerError)
+			return
 		}
 		lastTransactions = append(lastTransactions, lastTransaction)
 	}
@@ -174,5 +192,5 @@ func getClientBalanceController(c *fiber.Ctx, dbConn *pgxpool.Pool) error {
 		UltimasTransacoes: lastTransactions,
 	}
 
-	return c.Status(http.StatusOK).JSON(response)
+	render.JSON(w, r, response)
 }
