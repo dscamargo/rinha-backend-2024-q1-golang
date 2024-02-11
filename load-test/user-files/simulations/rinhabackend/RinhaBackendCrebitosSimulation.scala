@@ -25,6 +25,14 @@ class RinhaBackendCrebitosSimulation
     }
   }
 
+  val REQ_PARALELA_ID_CLIENTE = 1
+  val REQ_PARALELA_VALOR_POR_REQUISICAO = 10000
+  val REQ_PARALELA_NUM_REQUISICOES = 10
+  val REQ_PARALELA_SALDO_ESPERADO = (REQ_PARALELA_VALOR_POR_REQUISICAO * REQ_PARALELA_NUM_REQUISICOES)
+
+  val DEBITO = "d"
+  val CREDITO = "c"
+
   val validarConsistenciaSaldoLimite = (valor: Option[String], session: Session) => {
     /*
       Essa função é frágil porque depende que haja uma entrada
@@ -32,16 +40,16 @@ class RinhaBackendCrebitosSimulation
       e também que seja encadeada com com jmesPath("saldo") para
       que 'valor' seja o primeiro argumento da função validadora
       de 'validate(.., ..)'.
-      
+
       =============================================================
-      
+
       Nota para quem não tem experiência em testes de performance:
-        O teste de lógica de saldo/limite extrapola o que é comumente 
+        O teste de lógica de saldo/limite extrapola o que é comumente
         feito em testes de performance apenas por causa da natureza
-        da Rinha de Backend. Evite fazer esse tipo de coisa em 
+        da Rinha de Backend. Evite fazer esse tipo de coisa em
         testes de performance, pois não é uma prática recomendada
         normalmente.
-    */ 
+    */
 
     val saldo = valor.flatMap(s => Try(s.toInt).toOption)
     val limite = toInt(session("limite").as[String])
@@ -110,6 +118,69 @@ class RinhaBackendCrebitosSimulation
         jmesPath("saldo.total").validate("ConsistenciaSaldoLimite - Extrato", validarConsistenciaSaldoLimite)
     )
   )
+
+  val validarSaldoAposRequisicoesParalelas = (valorFinal: Int) => (saldo: Option[String], session: Session) => {
+    saldo match {
+      case Some(s) if s.toInt == valorFinal => Success(Option("ok"))
+      case _ => Failure("Saldo inconsistente!")
+    }
+  }
+
+  val converterTipoParaTexto = (tipo: String) => if (tipo == "c") "Crédito" else "Débito"
+
+  val resetarSaldo = (valor: Int, tipo: String) => scenario(s"""${converterTipoParaTexto(tipo)} para resetar saldo""")
+    .exec {s =>
+      val descricao = "resetar"
+      val cliente_id = REQ_PARALELA_ID_CLIENTE
+      val payload = s"""{"valor": ${valor}, "tipo": "${tipo}", "descricao": "${descricao}"}"""
+      val session = s.setAll(Map("descricao" -> descricao, "cliente_id" -> cliente_id, "payload" -> payload))
+      session
+    }
+    .exec(
+      http(s"""${converterTipoParaTexto(tipo)} para resetar saldo""")
+      .post(s => s"/clientes/${s("cliente_id").as[String]}/transacoes")
+          .header("content-type", "application/json")
+          .body(StringBody(s => s("payload").as[String]))
+          .check(
+            status.in(200, 422),
+            status.saveAs("httpStatus"))
+          .checkIf(s => s("httpStatus").as[String] == "200") {
+            jmesPath("saldo").ofType[Int].is(0)
+           }
+    )
+
+  val validarExtratoAposRequisicoesParalelas = (saldoEsperado: Int, tipo: String) => scenario(s"""Validação do Extrato ${converterTipoParaTexto(tipo)}""")
+    .exec(
+      http(s"""Validação do Extrato ${converterTipoParaTexto(tipo)}""")
+      .get(s"""/clientes/${REQ_PARALELA_ID_CLIENTE}/extrato""")
+      .check(
+        jmesPath("saldo.total").validate("ConsistenciaSaldoLimite - Extrato", validarSaldoAposRequisicoesParalelas(saldoEsperado)),
+        jsonPath("$.ultimas_transacoes[*]").count.is(REQ_PARALELA_NUM_REQUISICOES)
+      )
+    )
+    .stopInjectorIf(session => "Inconsistência de saldo identificada!", session => session.isFailed)
+
+  val transacoesParalelas = (nome: String, tipo: String) => scenario(nome)
+      .exec {s =>
+      val descricao = randomDescricao()
+      val cliente_id = REQ_PARALELA_ID_CLIENTE
+      val valor = REQ_PARALELA_VALOR_POR_REQUISICAO
+      val payload = s"""{"valor": ${valor}, "tipo": "${tipo}", "descricao": "${descricao}"}"""
+      val session = s.setAll(Map("descricao" -> descricao, "cliente_id" -> cliente_id, "payload" -> payload))
+      session
+    }
+    .exec(
+      http(nome)
+      .post(s => s"/clientes/${s("cliente_id").as[String]}/transacoes")
+          .header("content-type", "application/json")
+          .body(StringBody(s => s("payload").as[String]))
+          .check(
+            status.in(200, 422),
+            status.saveAs("httpStatus"))
+    )
+
+  val debitoParalelo = transacoesParalelas("Requisições Paralelas de Débito", DEBITO)
+  val creditoParalelo = transacoesParalelas("Requisições Paralelas de Crédito", CREDITO)
 
   val saldosIniciaisClientes = Array(
     Map("id" -> 1, "limite" ->   1000 * 100),
@@ -220,18 +291,44 @@ class RinhaBackendCrebitosSimulation
     criteriosClientes.inject(
       atOnceUsers(1)
     ).andThen(
-      debitos.inject(
-        rampUsersPerSec(1).to(220).during(2.minutes),
-        constantUsersPerSec(220).during(2.minutes)
-      ),
-      creditos.inject(
-        rampUsersPerSec(1).to(110).during(2.minutes),
-        constantUsersPerSec(110).during(2.minutes)
-      ),
-      extratos.inject(
-        rampUsersPerSec(1).to(10).during(2.minutes),
-        constantUsersPerSec(10).during(2.minutes)
+      debitoParalelo.inject(
+        atOnceUsers(10)
       )
+      .andThen(
+        validarExtratoAposRequisicoesParalelas(REQ_PARALELA_SALDO_ESPERADO * -1, DEBITO).inject(
+          atOnceUsers(1)
+        )
+        .andThen(
+          resetarSaldo(REQ_PARALELA_SALDO_ESPERADO, CREDITO).inject(
+            atOnceUsers(1)
+          )
+        )
+      ).andThen(
+        creditoParalelo.inject(
+          atOnceUsers(10)
+        ).andThen(
+          validarExtratoAposRequisicoesParalelas(REQ_PARALELA_SALDO_ESPERADO, CREDITO).inject(
+            atOnceUsers(1)
+          ).andThen(
+            resetarSaldo(REQ_PARALELA_SALDO_ESPERADO, DEBITO).inject(
+              atOnceUsers(1)
+            )
+          )
+        )
+      ).andThen(
+        debitos.inject(
+          rampUsersPerSec(1).to(220).during(2.minutes),
+          constantUsersPerSec(220).during(2.minutes)
+        ),
+        creditos.inject(
+          rampUsersPerSec(1).to(110).during(2.minutes),
+          constantUsersPerSec(110).during(2.minutes)
+        ),
+        extratos.inject(
+          rampUsersPerSec(1).to(10).during(2.minutes),
+          constantUsersPerSec(10).during(2.minutes)
+        )
+      ),
     )
   ).protocols(httpProtocol)
 }

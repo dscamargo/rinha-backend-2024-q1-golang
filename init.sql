@@ -13,21 +13,19 @@ CREATE TABLE IF NOT EXISTS "transacoes" (
                                             "valor" integer NOT NULL,
                                             "tipo" char(1) NOT NULL,
                                             "descricao" varchar(10) NOT NULL,
-                                            "realizado_em" timestamp DEFAULT now(),
-                                            CONSTRAINT fk_cliente FOREIGN KEY(cliente_id) references clientes(id) on delete set null on update no action
-
+                                            "realizado_em" timestamp NOT NULL DEFAULT now()
 );
 
 CREATE INDEX transacoes_id_idx ON "transacoes" USING HASH(id);
 CREATE INDEX transacoes_cliente_id_idx ON "transacoes" USING HASH(cliente_id);
 
 create or replace procedure criar_transacao(
-    in_cliente_id INTEGER,
-    in_valor integer,
-    in_tipo text,
-    in_descricao text,
-    inout in_saldo_atualizado integer default null,
-    inout in_limite_atualizado integer default null
+    id_cliente INTEGER,
+    valor integer,
+    tipo text,
+    descricao text,
+    inout saldo_atualizado integer default null,
+    inout limite_atualizado integer default null
 )
 
     language plpgsql
@@ -35,16 +33,16 @@ as $$
 
 begin
     UPDATE clientes
-    set saldo = saldo + in_valor
-    where id = in_cliente_id and saldo + in_valor >= - limite
-    returning saldo, limite into in_saldo_atualizado, in_limite_atualizado;
+    set saldo = saldo + valor
+    where id = id_cliente and saldo + valor >= - limite
+    returning saldo, limite into saldo_atualizado, limite_atualizado;
 
-    if in_saldo_atualizado is null or in_limite_atualizado is null then return; end if;
+    if saldo_atualizado is null or limite_atualizado is null then return; end if;
 
     commit;
 
     INSERT INTO transacoes (valor, tipo, descricao, cliente_id)
-    VALUES (ABS(in_valor), in_tipo, in_descricao, in_cliente_id);
+    VALUES (ABS(valor), tipo, descricao, id_cliente);
 end;
 $$;
 

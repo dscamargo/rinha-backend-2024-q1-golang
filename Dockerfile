@@ -1,6 +1,15 @@
-FROM golang:1.22 as builder
+FROM --platform=${BUILDPLATFORM:-linux/amd64} golang:1.22 as build
 
-WORKDIR /go/src/
+ARG TARGETPLATFORM
+ARG BUILDPLATFORM
+ARG TARGETOS
+ARG TARGETARCH
+
+WORKDIR /go/src/app
 COPY . .
-RUN GOOS=linux CGO_ENABLED=0 go build -o app
-CMD ["./app"]
+RUN go mod download
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -ldflags="-w -s" -o /go/bin/app
+
+FROM --platform=${TARGETPLATFORM:-linux/amd64} gcr.io/distroless/static-debian11
+COPY --from=build /go/bin/app /
+CMD ["/app"]

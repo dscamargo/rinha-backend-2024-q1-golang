@@ -1,6 +1,6 @@
 module github.com/dscamargo/rinha-2024-q1-golang
 
-go 1.21.6
+go 1.22.0
 
 require (
 	github.com/gofiber/fiber/v2 v2.52.0
